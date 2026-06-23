@@ -4,7 +4,7 @@
 run:
 	python -m src.pipeline \
 		--jd data/job_description.txt \
-		--candidates data/candidates.jsonl.gz \
+		--candidates data/candidates.jsonl \
 		--output outputs/ranked_output.csv
 
 # ── Sample run (sandbox / quick test) ────────────────────────────────────────

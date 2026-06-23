@@ -115,6 +115,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     csv_path        = Path(sys.argv[1])
-    candidates_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("data/candidates.jsonl.gz")
+    candidates_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("data/candidates.jsonl")
 
     sys.exit(0 if validate(csv_path, candidates_path) else 1)

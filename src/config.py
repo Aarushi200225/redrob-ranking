@@ -19,7 +19,7 @@ OUTPUT_DIR   = ROOT_DIR / "outputs"
 CACHE_DIR    = ROOT_DIR / ".cache"
 
 # ── Input files ───────────────────────────────────────────────────────────────
-CANDIDATES_PATH     = DATA_DIR / "candidates.jsonl.gz"
+CANDIDATES_PATH     = DATA_DIR / "candidates.jsonl"
 JD_PATH             = DATA_DIR / "job_description.txt"
 SKILL_TAXONOMY_PATH = ARTIFACT_DIR / "skill_taxonomy.json"
 VIBE_KEYWORDS_PATH  = ARTIFACT_DIR / "vibe_keywords.json"
