@@ -1,0 +1,75 @@
+{
+  "vector_database": [
+    "FAISS", "Milvus", "Qdrant", "Pinecone", "Weaviate",
+    "OpenSearch", "Chroma", "pgvector", "Vespa", "Redis Vector",
+    "vector store", "vector search", "vector index", "ANN index",
+    "approximate nearest neighbor", "dense retrieval"
+  ],
+  "llm_finetuning": [
+    "LoRA", "QLoRA", "PEFT", "SFT", "supervised fine-tuning",
+    "instruction tuning", "adapter tuning", "RLHF",
+    "DPO", "PPO", "fine-tune", "fine-tuning", "model alignment",
+    "parameter efficient", "low rank adaptation"
+  ],
+  "learning_to_rank": [
+    "LTR", "learning to rank", "LambdaMART", "XGBoost ranker",
+    "LightGBM ranker", "RankNet", "NDCG", "MRR", "MAP",
+    "pointwise ranking", "pairwise ranking", "listwise ranking",
+    "ranking evaluation", "ranking system", "reranker", "reranking"
+  ],
+  "rag_systems": [
+    "RAG", "retrieval augmented generation", "retrieval augmented",
+    "embedding retrieval", "dense retrieval", "hybrid search",
+    "semantic search", "document retrieval", "passage retrieval",
+    "knowledge retrieval", "grounded generation"
+  ],
+  "embeddings": [
+    "embeddings", "sentence embeddings", "text embeddings",
+    "semantic embeddings", "dense embeddings", "sparse embeddings",
+    "sentence-transformers", "SBERT", "BGE", "E5", "GTE",
+    "embedding model", "bi-encoder", "dual encoder",
+    "representation learning", "vector representations"
+  ],
+  "mlops": [
+    "MLOps", "ML platform", "model serving", "model deployment",
+    "model monitoring", "feature store", "experiment tracking",
+    "MLflow", "Weights & Biases", "wandb", "Kubeflow",
+    "Airflow", "data pipeline", "training pipeline",
+    "CI/CD for ML", "model registry"
+  ],
+  "llm_frameworks": [
+    "LangChain", "LlamaIndex", "Haystack", "DSPy",
+    "semantic kernel", "LLM framework", "prompt engineering",
+    "chain of thought", "function calling", "tool use",
+    "agents", "agentic", "LLM orchestration"
+  ],
+  "search_systems": [
+    "Elasticsearch", "OpenSearch", "Solr", "BM25",
+    "TF-IDF", "inverted index", "full text search",
+    "information retrieval", "IR system", "search engine",
+    "search relevance", "query understanding"
+  ],
+  "nlp": [
+    "NLP", "natural language processing", "text classification",
+    "named entity recognition", "NER", "sentiment analysis",
+    "text summarization", "machine translation",
+    "question answering", "span extraction", "transformers",
+    "BERT", "RoBERTa", "language model", "language modelling"
+  ],
+  "python": [
+    "Python", "PyTorch", "TensorFlow", "JAX", "numpy",
+    "pandas", "scikit-learn", "sklearn", "FastAPI", "Flask",
+    "asyncio", "multiprocessing", "Cython"
+  ],
+  "production_ml": [
+    "production ML", "deployed to production", "serving at scale",
+    "real-time inference", "batch inference", "low latency",
+    "high throughput", "A/B testing", "shadow deployment",
+    "canary deployment", "production system", "at scale"
+  ],
+  "data_engineering": [
+    "data pipeline", "ETL", "Spark", "Kafka", "Flink",
+    "dbt", "data warehouse", "data lake", "BigQuery",
+    "Redshift", "Snowflake", "Databricks", "data engineering"
+  ]
+}
