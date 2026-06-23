@@ -1,0 +1,1 @@
+"""Shared utility modules — logger, validator, scoring, data loader."""

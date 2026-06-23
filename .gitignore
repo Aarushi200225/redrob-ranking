@@ -1,0 +1,49 @@
+# Models (large binaries — download via make download-models)
+models/
+*.gguf
+*.bin
+*.safetensors
+
+# Data (provided separately — not committed)
+data/candidates.jsonl.gz
+data/candidates.jsonl
+
+# Cache and intermediate state
+.cache/
+*.npy
+*.faiss
+
+# Output (generated at runtime)
+outputs/ranked_output.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environments
+.env
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

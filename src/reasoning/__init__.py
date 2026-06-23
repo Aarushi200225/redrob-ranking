@@ -1,0 +1,1 @@
+"""Reasoning generation modules — LLM and structured assembly."""

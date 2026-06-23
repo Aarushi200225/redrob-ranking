@@ -1,0 +1,26 @@
+# ── Core inference ────────────────────────────────────────────────────────────
+llama-cpp-python==0.2.90          # CPU LLM inference — Qwen2.5-0.5B GGUF
+sentence-transformers==3.0.1      # bge-small-en-v1.5 + ms-marco cross-encoder
+
+# ── Retrieval ─────────────────────────────────────────────────────────────────
+faiss-cpu==1.8.0                  # Exact ANN — IndexFlatIP
+rank-bm25==0.2.2                  # Dual-chamber BM25 retrieval
+
+# ── Data & numerics ───────────────────────────────────────────────────────────
+orjson==3.10.6                    # Fastest JSON parser for JSONL streaming
+numpy==1.26.4                     # Vectorized feature ops, embedding matrix
+pandas==2.2.2                     # CSV output only
+
+# ── ML utilities ──────────────────────────────────────────────────────────────
+scikit-learn==1.5.1               # MinMaxScaler for score normalization
+
+# ── Validation & typing ───────────────────────────────────────────────────────
+pydantic==2.8.2                   # Qwen output guardrail + schema validation
+
+# ── Sandbox demo ──────────────────────────────────────────────────────────────
+streamlit==1.37.0                 # HuggingFace Spaces sandbox app
+
+# ── Dev / testing ─────────────────────────────────────────────────────────────
+pytest==8.3.2
+pytest-cov==5.0.0
+python-dotenv==1.0.1

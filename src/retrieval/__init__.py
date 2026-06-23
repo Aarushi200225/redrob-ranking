@@ -1,0 +1,1 @@
+"""Retrieval modules — BM25, FAISS, RRF fusion."""
