@@ -33,7 +33,8 @@ EMBEDDER_MODEL_ID      = "BAAI/bge-small-en-v1.5"
 CROSS_ENCODER_MODEL_ID = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 # ── LLM inference settings ────────────────────────────────────────────────────
-LLM_N_CTX      = 512   # Context window
+LLM_N_CTX      = 2048   # Context window
+LLM_N_CTX_REASONING = 512   # Smaller context for reasoning generation only
 LLM_MAX_TOKENS = 120   # Reasoning output cap — 1-2 sentences
 LLM_TEMPERATURE = 0.3  # Low temp — factual, consistent
 LLM_N_THREADS  = 4     # CPU thread count for llama.cpp
@@ -43,7 +44,8 @@ EMBED_BATCH_SIZE  = 512   # Optimal for CPU batch inference
 EMBED_NORMALIZE   = True  # Required for cosine via inner product
 
 # ── Stage 2 — BM25 ───────────────────────────────────────────────────────────
-BM25_WORKERS         = 6      # ProcessPoolExecutor workers
+import os
+BM25_WORKERS         = 6      # ProcessPoolExecutor workers # Retained for future use — BM25 runs sequentially on Windows
 BM25_CHAMBER_A_TOP_K = 5000   # Raw JD terms
 BM25_CHAMBER_B_TOP_K = 5000   # Expanded taxonomy terms
 BM25_UNION_CAP       = 15000  # Max unique after union
@@ -106,10 +108,10 @@ LOCATION_TIER_1 = {"pune", "noida"}
 LOCATION_TIER_2 = {"hyderabad", "mumbai", "delhi", "delhi ncr", "gurugram", "gurgaon"}
 
 # ── F8 — Honeypot gate ────────────────────────────────────────────────────────
-HONEYPOT_TIMELINE_DELTA_MONTHS   = 24
-HONEYPOT_EXPERT_SKILL_THRESHOLD  = 10
+HONEYPOT_TIMELINE_DELTA_MONTHS = 36   # Only flag genuine overcount
+HONEYPOT_EXPERT_SKILL_THRESHOLD  = 8    #Tightened from 10 to 8 expert skills
 HONEYPOT_YOE_THRESHOLD           = 3
-HONEYPOT_SCORE_GATE              = 0.4
+HONEYPOT_SCORE_GATE              = 0.55 #Raised from 0.4 to 0.55 — stricter gate
 
 # ── Anti-stuffer penalty ──────────────────────────────────────────────────────
 ANTI_STUFFER_SKILL_COUNT          = 15

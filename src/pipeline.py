@@ -40,14 +40,14 @@ def _run_stage2(candidates_path: Path, jd_object: dict) -> tuple:
     return stage2(candidates_path, jd_object)
 
 
-def _run_stage3(bm25_pool: list, query_vectors: dict) -> list:
+def _run_stage3(bm25_pool: list, query_vectors: dict, bm25_top_a: list, bm25_top_b: list) -> tuple:
     from src.stages.stage3_embedding import run as stage3
-    return stage3(bm25_pool, query_vectors)
+    return stage3(bm25_pool, query_vectors, bm25_top_a, bm25_top_b)
 
 
-def _run_stage4(retrieval_pool: list, jd_object: dict) -> list:
+def _run_stage4(retrieval_pool: list, jd_object: dict, rrf_score_map: dict) -> list:
     from src.stages.stage4_reranking import run as stage4
-    return stage4(retrieval_pool, jd_object)
+    return stage4(retrieval_pool, jd_object,  rrf_score_map)
 
 
 def _run_stage5(top_100: list, jd_object: dict, output_path: Path) -> Path:
@@ -118,23 +118,26 @@ def run_pipeline(
             from src.stages.stage1_jd_intelligence import build_minimal_fallback
             jd_object = build_minimal_fallback(jd_path)
 
-    # ── Stage 2 ───────────────────────────────────────────────────────────────
+    # ── Stage 2 : unpack 4-tuple──────────────────────────────────────────────
     bm25_pool           = None
     valid_candidate_ids = set()
+    bm25_top_a          = []
+    bm25_top_b          = []
     with stage_timer("Stage 2 — Honeypot Gate + BM25 Retrieval", log):
         try:
-            bm25_pool, valid_candidate_ids = _run_stage2(candidates_path, jd_object)
+            bm25_pool, valid_candidate_ids, bm25_top_a, bm25_top_b = _run_stage2(candidates_path, jd_object)
             log.info(f"BM25 pool: {len(bm25_pool):,} candidates")
         except Exception as exc:
             log.error(f"Stage 2 fatal: {exc}")
             raise
 
-    # ── Stage 3 ───────────────────────────────────────────────────────────────
+    # ── Stage 3 : unpack tuple + pass BM25 streams ────────────────────────────
     retrieval_pool = None
+    rrf_score_map  = {}
     with stage_timer("Stage 3 — Semantic Embedding + Hybrid Retrieval", log):
         try:
             query_vectors  = jd_object.get("query_vectors", {})
-            retrieval_pool = _run_stage3(bm25_pool, query_vectors)
+            retrieval_pool, rrf_score_map = _run_stage3(bm25_pool, query_vectors, bm25_top_a, bm25_top_b)
             log.info(f"Retrieval pool: {len(retrieval_pool):,} candidates")
         except Exception as exc:
             log.error(f"Stage 3 fatal: {exc}")
@@ -144,7 +147,7 @@ def run_pipeline(
     top_100 = None
     with stage_timer("Stage 4 — Feature Extraction + Reranking", log):
         try:
-            top_100 = _run_stage4(retrieval_pool, jd_object)
+            top_100 = _run_stage4(retrieval_pool, jd_object, rrf_score_map)
             log.info(f"Top {len(top_100)} candidates selected")
         except Exception as exc:
             log_fallback(log, "Stage 4", str(exc))

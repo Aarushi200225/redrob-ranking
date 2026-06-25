@@ -3,12 +3,12 @@ llama-cpp-python==0.2.90          # CPU LLM inference — Qwen2.5-0.5B GGUF
 sentence-transformers==3.0.1      # bge-small-en-v1.5 + ms-marco cross-encoder
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
-faiss-cpu==1.8.0                  # Exact ANN — IndexFlatIP
+faiss-cpu>=1.8.0                   # Exact ANN — IndexFlatIP   # unpinned — version depends on numpy compatibility
 rank-bm25==0.2.2                  # Dual-chamber BM25 retrieval
 
 # ── Data & numerics ───────────────────────────────────────────────────────────
 orjson==3.10.6                    # Fastest JSON parser for JSONL streaming
-numpy==1.26.4                     # Vectorized feature ops, embedding matrix
+numpy==1.26.4                     # Vectorized feature ops, embedding matrix  # pinned — compatible with faiss + scipy + sentence-transformers
 pandas==2.2.2                     # CSV output only
 
 # ── ML utilities ──────────────────────────────────────────────────────────────
