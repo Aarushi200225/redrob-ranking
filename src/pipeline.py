@@ -137,6 +137,7 @@ def run_pipeline(
     with stage_timer("Stage 3 — Semantic Embedding + Hybrid Retrieval", log):
         try:
             query_vectors  = jd_object.get("query_vectors", {})
+            log.info(f"Query vectors available: {list(query_vectors.keys())}")
             retrieval_pool, rrf_score_map = _run_stage3(bm25_pool, query_vectors, bm25_top_a, bm25_top_b)
             log.info(f"Retrieval pool: {len(retrieval_pool):,} candidates")
         except Exception as exc:

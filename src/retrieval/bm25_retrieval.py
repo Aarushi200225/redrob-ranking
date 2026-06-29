@@ -27,15 +27,20 @@ log = get_logger(__name__)
 
 def _tokenize(text: str) -> list[str]:
     """Lowercase, remove punctuation, split into tokens."""
+    if not text:
+        return []
     text = text.lower()
     text = re.sub(r"[^a-z0-9\s]", " ", text)
-    # Highly optimized, O(1) lookup set of common filler words causing the MemoryError
     STOP_WORDS = {
-        'the', 'and', 'a', 'of', 'to', 'in', 'is', 'with', 'for', 'on', 'at', 'by', 
-        'an', 'from', 'as', 'about', 'that', 'this', 'are', 'be', 'or', 'it', 'was', 
-        'your', 'our', 'their', 'will', 'can', 'not', 'which', 'who', 'with', 'into'
+        'the', 'and', 'a', 'of', 'to', 'in', 'is', 'with', 'for',
+        'on', 'at', 'by', 'an', 'from', 'as', 'about', 'that', 'this',
+        'are', 'be', 'or', 'it', 'was', 'your', 'our', 'their', 'will',
+        'can', 'not', 'which', 'who', 'into', 'have', 'has', 'had',
+        'been', 'but', 'more', 'also', 'we', 'you', 'my', 'they',
+        'he', 'she', 'its', 'me', 'him', 'her', 'us', 'do', 'did',
+        'work', 'worked', 'working', 'experience', 'year', 'years'
     }
-    return [t for t in text.split() if t not in STOP_WORDS and len(t) > 1]
+    return [t for t in text.split() if t not in STOP_WORDS and len(t) > 2]
 
 
 def _extract_candidate_text(candidate: dict) -> str:
@@ -73,8 +78,8 @@ def build_bm25_index(
     """
     Build BM25Okapi index over the candidate corpus.
 
-    Runs sequentially — reliable on all platforms including Windows.
-    Text extraction + tokenisation takes ~8-10s for 100K candidates.
+    Memory-optimised: extracts text and tokenises in a single pass,
+    discarding intermediate strings immediately to reduce peak RAM.
 
     Parameters
     ----------
@@ -91,12 +96,15 @@ def build_bm25_index(
 
     corpus = []
     for i, candidate in enumerate(candidates):
+        # Extract text and tokenise immediately — don't store raw text
         text   = _extract_candidate_text(candidate)
         tokens = _tokenize(text)
         corpus.append(tokens)
-
+        
+        # Explicit progress + periodic GC to keep memory flat
         if (i + 1) % 10000 == 0:
             log.info(f"  Tokenised {i + 1:,} / {n:,} ...")
+            import gc; gc.collect() # Force garbage collection to free memory
 
     log.info(f"Building BM25 index over {len(corpus):,} documents ...")
     index = BM25Okapi(corpus)

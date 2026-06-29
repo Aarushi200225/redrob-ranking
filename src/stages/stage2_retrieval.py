@@ -92,12 +92,14 @@ def run(
     # Free BM25 corpus memory before returning — Stage 3 needs the RAM
     del corpus
     del index
+    del clean_candidates
+    del candidates
     import gc
     gc.collect()
 
     log_pool_transition(
         log, "Stage 2",
-        len(candidates), len(bm25_pool),
+        len(valid_candidate_ids), len(bm25_pool),
         note="after honeypot gate + dual-chamber BM25"
     )
 
