@@ -1,5 +1,5 @@
 # Models (large binaries — download via make download-models)
-models/
+/models/
 *.gguf
 *.bin
 *.safetensors
