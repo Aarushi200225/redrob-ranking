@@ -28,6 +28,9 @@ def load_embedder():
     -------
     SentenceTransformer model ready for encoding.
     """
+    import torch
+    torch.set_num_threads(max(1, __import__('os').cpu_count() or 1))
+
     from sentence_transformers import SentenceTransformer
     log.info(f"Loading embedder: {EMBEDDER_MODEL_ID}")
     model = SentenceTransformer(EMBEDDER_MODEL_ID)
@@ -111,6 +114,12 @@ def build_candidate_text_blob(candidate: dict) -> str:
     """
     Construct a single text blob per candidate for embedding.
 
+    Truncated to ~400 chars total — retrieval embeddings need
+    semantic signal, not full text. Long blobs collapse CPU
+    throughput on constrained hardware (confirmed: 1582 char
+    avg blob = 2.1 texts/sec vs 100 char blob = 35 texts/sec
+    on 2-core CPU).
+
     Concatenates highest-signal text fields:
       - headline
       - summary
@@ -134,14 +143,14 @@ def build_candidate_text_blob(candidate: dict) -> str:
     if headline:
         parts.append(headline)
     if summary:
-        parts.append(summary)
+        parts.append(summary[:150])
 
     # Top 3 career role descriptions
     career = candidate.get("career_history", [])
-    for role in career[:3]:
+    for role in career[:2]:           # Reduced from 3 to 2 roles
         desc = role.get("description", "").strip()
         if desc:
-            parts.append(desc)
+            parts.append(desc[:100])  # Capped at 100 chars per role
 
     # Top 10 skills sorted by proficiency depth then duration
     proficiency_order = {"expert": 4, "advanced": 3, "intermediate": 2, "beginner": 1}
@@ -154,8 +163,9 @@ def build_candidate_text_blob(candidate: dict) -> str:
         ),
         reverse=True,
     )
-    skill_names = [s["name"] for s in sorted_skills[:10] if s.get("name")]
+    skill_names = [s["name"] for s in sorted_skills[:8] if s.get("name")]
     if skill_names:
         parts.append(", ".join(skill_names))
 
-    return " | ".join(parts)
+    blob = " | ".join(parts)
+    return blob[:400]   # Hard cap — guarantees consistent encode speed

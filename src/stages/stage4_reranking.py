@@ -3,37 +3,42 @@ stages/stage4_reranking.py
 ──────────────────────────
 Stage 4 — Feature Extraction + Multi-Signal Reranking.
 
-Responsibilities:
-  - F1-F7 sequential feature extraction on 2K candidates
-  - Hard elimination of consulting-only candidates (F1 = -1.0)
-  - Pass A: cross-encoder reranking 2K → 500
-  - Pass B: normalised composite scoring 500 → 100
+Pipeline:
+  Pass 0: F1-F9 sequential feature extraction (2000 candidates)
+          F1 consulting gate → hard elimination
+          Structural pre-filter: F2 < 0.20 AND F3 < 0.20
+            → assign ce_score=0.0, skip cross-encoder
+            → candidate stays in pool (other signals may rescue)
+  Pass A: Cross-encoder reranking on plausible candidates → top 500
+  Pass B: MinMax-normalised composite scoring → top 100
 
-Runtime: ~65s
-Output:  list[dict] — top 100 candidates with score_breakdown
+Bug fix: cross-encoder outputs unbounded logits (-8 to +8).
+All additive components MinMax-normalised over batch before
+weighted sum. Without this, CE dominates regardless of weights.
+
+Runtime: ~55s | Memory peak: ~2GB
 """
 
 import numpy as np
 
 from src.config import (
-    CROSS_ENCODER_TOP_K,
     RERANK_POOL_SIZE,
     FINAL_TOP_K,
+    SCORE_WEIGHTS,
+    CE_PREFILTER_F2_THRESHOLD,
+    CE_PREFILTER_F3_THRESHOLD,
 )
-from src.utils.logger import get_logger, log_pool_transition
+from src.utils.logger import get_logger, log_pool_transition, memory_gate
 from src.utils.scoring import compute_composite_scores, apply_tiebreaking
-# from src.models.model_context import ModelContext
-# from src.models.cross_encoder import (
-#     load_cross_encoder,
-#     score_pairs,
-# )
-from src.features.f1_title_fit import score_f1
+
+from src.features.f1_title_fit       import score_f1
 from src.features.f2_experience_quality import score_f2
-from src.features.f3_skills_match import score_f3
-from src.features.f4_vibe_score import score_f4
-from src.features.f5_availability import score_f5
+from src.features.f3_skills_match    import score_f3
+from src.features.f4_vibe_score      import score_f4
+from src.features.f5_availability    import score_f5
 from src.features.f6_market_validation import score_f6
-from src.features.f7_location_fit import score_f7
+from src.features.f7_location_fit    import score_f7
+from src.features.f9_salary_fit      import score_f9_salary_fit
 
 log = get_logger(__name__)
 
@@ -42,50 +47,71 @@ def _extract_features(
     candidates: list[dict],
     jd_object: dict,
     rrf_score_map: dict,
-    candidate_vecs: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, list[dict]]:
+) -> tuple:
     """
-    Extract F1-F7 features for all candidates sequentially.
+    Extract F1-F9 features sequentially for all candidates.
+
+    Applies:
+      - F1 consulting-only hard gate (returns -1.0 → eliminated)
+      - Structural pre-filter: F2 < 0.20 AND F3 < 0.20
+          → ce_score pre-assigned 0.0, bypass cross-encoder
+          → candidate stays in pool for other signals
 
     Returns
     -------
-    tuple:
-      feature_matrix    : np.ndarray [n_survivors, 6] — F2-F7 scores
-      rrf_scores        : np.ndarray [n_survivors] — RRF scores
-      survivors         : list[dict] — candidates passing F1 hard gate
+    tuple of aligned lists/arrays for survivors:
+      (survivors, rrf_arr, f2_arr, f3_arr, f4_arr,
+       f5_arr, recency_arr, f6_arr, f7_arr, f9_arr,
+       ce_preassigned_arr, needs_ce_arr)
     """
-    survivors    = []
-    f2_scores    = []
-    f3_scores    = []
-    f4_scores    = []
-    f5_scores    = []
-    recency_mults = []
-    f6_scores    = []
-    f7_scores    = []
-    rrf_scores   = []
+    survivors       = []
+    rrf_scores      = []
+    f2_scores       = []
+    f3_scores       = []
+    f4_scores       = []
+    f5_scores       = []
+    recency_mults   = []
+    f6_scores       = []
+    f7_scores       = []
+    f9_scores       = []
+    ce_preassigned  = []   # Pre-assigned CE score (0.0 for filtered)
+    needs_ce        = []   # True = needs cross-encoder inference
 
-    for i, candidate in enumerate(candidates):
+    consulting_gate_count = 0
+    prefilter_count       = 0
+
+    for candidate in candidates:
         cid = candidate.get("candidate_id", "")
 
-        # F1 — hard gate check (consulting-only → -1.0)
+        # ── F1: consulting-only hard gate ─────────────────────────────────────
         f1 = score_f1(candidate, jd_object)
         if f1 < 0:
-            continue  # Hard eliminated
+            consulting_gate_count += 1
+            continue
 
-        # F2-F7
-        f2        = score_f2(candidate, jd_object)
-        f3        = score_f3(candidate, jd_object)
+        # ── F2-F9 feature extraction ──────────────────────────────────────────
+        f2          = score_f2(candidate, jd_object)
+        f3          = score_f3(candidate, jd_object)
+        f4          = score_f4(candidate, jd_object)
+        f5, r_mult  = score_f5(candidate, jd_object)
+        f6          = score_f6(candidate, jd_object)
+        f7          = score_f7(candidate, jd_object)
+        f9          = score_f9_salary_fit(candidate, jd_object)
+        rrf         = rrf_score_map.get(cid, 0.0)
 
-        # F4 — pass candidate embedding vec if available
-        cand_vec  = candidate_vecs[i] if candidate_vecs is not None else None
-        f4        = score_f4(candidate, jd_object, cand_vec)
-
-        f5, r_mult = score_f5(candidate, jd_object)
-        f6        = score_f6(candidate, jd_object)
-        f7        = score_f7(candidate, jd_object)
-        rrf       = rrf_score_map.get(cid, 0.0)
+        # ── Structural pre-filter ─────────────────────────────────────────────
+        # Both F2 AND F3 below threshold = clearly not an AI engineer
+        # Assign ce_score=0.0, skip inference, keep in pool
+        if f2 < CE_PREFILTER_F2_THRESHOLD and f3 < CE_PREFILTER_F3_THRESHOLD:
+            prefilter_count += 1
+            ce_preassigned.append(0.0)
+            needs_ce.append(False)
+        else:
+            ce_preassigned.append(None)   # Will be filled by cross-encoder
+            needs_ce.append(True)
 
         survivors.append(candidate)
+        rrf_scores.append(rrf)
         f2_scores.append(f2)
         f3_scores.append(f3)
         f4_scores.append(f4)
@@ -93,25 +119,28 @@ def _extract_features(
         recency_mults.append(r_mult)
         f6_scores.append(f6)
         f7_scores.append(f7)
-        rrf_scores.append(rrf)
+        f9_scores.append(f9)
 
-    n = len(survivors)
     log.info(
-        f"Feature extraction complete — "
-        f"{n:,} survivors from {len(candidates):,} candidates"
+        f"Feature extraction: "
+        f"{consulting_gate_count} consulting-only eliminated, "
+        f"{prefilter_count} pre-filtered (CE=0.0), "
+        f"{sum(needs_ce)} candidates need cross-encoder"
     )
 
-    feature_matrix = np.column_stack([
-        f2_scores, f3_scores, f4_scores,
-        f5_scores, f6_scores,
-    ]).astype(np.float32)
-
     return (
-        feature_matrix,
-        np.array(rrf_scores, dtype=np.float32),
-        np.array(f7_scores, dtype=np.float32),
-        np.array(recency_mults, dtype=np.float32),
         survivors,
+        np.array(rrf_scores,    dtype=np.float32),
+        np.array(f2_scores,     dtype=np.float32),
+        np.array(f3_scores,     dtype=np.float32),
+        np.array(f4_scores,     dtype=np.float32),
+        np.array(f5_scores,     dtype=np.float32),
+        np.array(recency_mults, dtype=np.float32),
+        np.array(f6_scores,     dtype=np.float32),
+        np.array(f7_scores,     dtype=np.float32),
+        np.array(f9_scores,     dtype=np.float32),
+        ce_preassigned,
+        needs_ce,
     )
 
 
@@ -121,112 +150,145 @@ def run(
     rrf_score_map: dict | None = None,
 ) -> list[dict]:
     """
-    Execute Stage 4 — Feature Extraction + Reranking.
+    Execute Stage 4 — Feature Extraction + Multi-Signal Reranking.
 
     Parameters
     ----------
-    retrieval_pool : 2K candidates from Stage 3.
+    retrieval_pool : Top 2000 candidates from Stage 3.
     jd_object      : Parsed JD object from Stage 1.
     rrf_score_map  : {candidate_id: rrf_score} from Stage 3.
 
     Returns
     -------
-    list[dict] — top 100 candidates, each with 'score' and
-                 'score_breakdown' fields attached.
+    list[dict] — top 100 candidates with _score and
+                 _score_breakdown attached.
     """
     from src.models.model_context import ModelContext
     from src.models.cross_encoder import load_cross_encoder, score_pairs
+
     if rrf_score_map is None:
         rrf_score_map = {}
 
-    # ── F1-F7 feature extraction ──────────────────────────────────────────────
-    log.info("Extracting features F1-F7 ...")
+    log.info(f"Stage 4: {len(retrieval_pool):,} candidates")
+
+    # ── Feature extraction ────────────────────────────────────────────────────
     (
-        feature_matrix,
-        rrf_scores,
-        f7_scores,
-        recency_mults,
         survivors,
+        rrf_arr, f2_arr, f3_arr, f4_arr,
+        f5_arr, recency_arr, f6_arr, f7_arr, f9_arr,
+        ce_preassigned, needs_ce,
     ) = _extract_features(retrieval_pool, jd_object, rrf_score_map)
 
     if len(survivors) < FINAL_TOP_K:
         log.warning(
-            f"Only {len(survivors)} survivors — "
-            f"fewer than {FINAL_TOP_K} requested"
+            f"Only {len(survivors)} survivors after feature extraction "
+            f"— fewer than {FINAL_TOP_K} requested"
         )
 
     log_pool_transition(
-        log, "F1-F7 extraction",
+        log, "F1-F9 extraction",
         len(retrieval_pool), len(survivors),
-        note="after consulting-only gate"
+        note="after consulting gate"
     )
 
     # ── Pass A: Cross-encoder reranking ───────────────────────────────────────
-    log.info(f"Cross-encoder reranking {len(survivors):,} candidates ...")
-    jd_text    = jd_object.get("raw_text", "")
-    ce_scores  = np.zeros(len(survivors), dtype=np.float32)
+    ce_scores = np.zeros(len(survivors), dtype=np.float32)
 
-    try:
-        with ModelContext(load_cross_encoder) as cross_encoder:
-            ce_scores = score_pairs(cross_encoder, jd_text, survivors)
-    except Exception as exc:
-        log.warning(f"Cross-encoder failed ({exc}) — using zero scores")
+    # Fill pre-assigned scores
+    for i, (preassigned, run_ce) in enumerate(
+        zip(ce_preassigned, needs_ce)
+    ):
+        if not run_ce:
+            ce_scores[i] = 0.0
 
-    # Select top RERANK_POOL_SIZE by cross-encoder score
-    ce_top_indices = np.argsort(ce_scores)[::-1][:RERANK_POOL_SIZE]
+    # Run cross-encoder on candidates that need it
+    ce_candidates = [
+        (i, c) for i, (c, run_ce)
+        in enumerate(zip(survivors, needs_ce)) if run_ce
+    ]
 
-    rerank_pool     = [survivors[i]    for i in ce_top_indices]
-    ce_pool_scores  = ce_scores[ce_top_indices]
-    rrf_pool_scores = rrf_scores[ce_top_indices]
-    f2_pool         = feature_matrix[ce_top_indices, 0]
-    f3_pool         = feature_matrix[ce_top_indices, 1]
-    f4_pool         = feature_matrix[ce_top_indices, 2]
-    f5_pool         = feature_matrix[ce_top_indices, 3]
-    f6_pool         = feature_matrix[ce_top_indices, 4]
-    f7_pool         = f7_scores[ce_top_indices]
-    recency_pool    = recency_mults[ce_top_indices]
+    if ce_candidates:
+        ce_indices   = [i for i, _ in ce_candidates]
+        ce_cands     = [c for _, c in ce_candidates]
+        jd_text      = jd_object.get("raw_text", "")
+
+        try:
+            with ModelContext(load_cross_encoder) as cross_encoder:
+                raw_scores = score_pairs(
+                    cross_encoder, jd_text, ce_cands
+                )
+            for idx, score in zip(ce_indices, raw_scores):
+                ce_scores[idx] = score
+        except Exception as exc:
+            log.warning(
+                f"Cross-encoder failed ({exc}) — "
+                f"using zero scores, RRF+features only"
+            )
+
+    memory_gate("Stage 4 cross-encoder", log)
+
+    # ── Select top RERANK_POOL_SIZE by cross-encoder ──────────────────────────
+    top_ce_indices = np.argsort(ce_scores)[::-1][:RERANK_POOL_SIZE]
+
+    pool_survivors  = [survivors[i]     for i in top_ce_indices]
+    pool_ce         = ce_scores[top_ce_indices]
+    pool_rrf        = rrf_arr[top_ce_indices]
+    pool_f2         = f2_arr[top_ce_indices]
+    pool_f3         = f3_arr[top_ce_indices]
+    pool_f4         = f4_arr[top_ce_indices]
+    pool_f5         = f5_arr[top_ce_indices]
+    pool_recency    = recency_arr[top_ce_indices]
+    pool_f6         = f6_arr[top_ce_indices]
+    pool_f7         = f7_arr[top_ce_indices]
+    pool_f9         = f9_arr[top_ce_indices]
 
     log_pool_transition(
         log, "Pass A cross-encoder",
-        len(survivors), len(rerank_pool)
+        len(survivors), len(pool_survivors)
     )
 
-    # ── Pass B: Normalised composite scoring ──────────────────────────────────
-    log.info("Computing normalised composite scores ...")
+    # ── Pass B: MinMax-normalised composite scoring ───────────────────────────
+    log.info("Computing MinMax-normalised composite scores ...")
+
     final_scores = compute_composite_scores(
-        rrf_scores        = rrf_pool_scores,
-        ce_scores         = ce_pool_scores,
-        f2_experience     = f2_pool,
-        f3_skills         = f3_pool,
-        f4_vibe           = f4_pool,
-        f5_availability   = f5_pool,
-        f6_market         = f6_pool,
-        f7_location       = f7_pool,
-        recency_multipliers = recency_pool,
+        rrf_scores        = pool_rrf,
+        ce_scores         = pool_ce,
+        f2_experience     = pool_f2,
+        f3_skills         = pool_f3,
+        f4_vibe           = pool_f4,
+        f5_availability   = pool_f5,
+        f6_market         = pool_f6,
+        f7_location       = pool_f7,
+        recency_multipliers = pool_recency,
+        f9_salary         = pool_f9,
     )
 
-    # ── Tie-breaking + top 100 selection ─────────────────────────────────────
-    ranked = apply_tiebreaking(rerank_pool, final_scores)
+    # ── Tie-breaking + top 100 ────────────────────────────────────────────────
+    ranked     = apply_tiebreaking(pool_survivors, final_scores)
     top_100_pairs = ranked[:FINAL_TOP_K]
 
-    # Attach score and score_breakdown to each candidate
     top_100 = []
-    for rank_idx, (candidate, score) in enumerate(top_100_pairs):
-        candidate = dict(candidate)  # shallow copy — don't mutate original
-        candidate["_score"] = float(score)
-        candidate["_rank"]  = rank_idx + 1
-        candidate["_score_breakdown"] = {
-            "cross_encoder": float(ce_pool_scores[
-                rerank_pool.index(
-                    top_100_pairs[rank_idx][0]
-                )
-            ]) if top_100_pairs[rank_idx][0] in rerank_pool else 0.0,
+    for rank_idx, (candidate, score) in enumerate(top_100_pairs, start=1):
+        c = dict(candidate)
+        c["_score"] = float(score)
+        c["_rank"]  = rank_idx
+        c["_score_breakdown"] = {
+            "cross_encoder": float(
+                pool_ce[pool_survivors.index(candidate)]
+                if candidate in pool_survivors else 0.0
+            ),
+            "rrf":      float(pool_rrf[pool_survivors.index(candidate)]
+                              if candidate in pool_survivors else 0.0),
+            "vibe":     float(pool_f4[pool_survivors.index(candidate)]
+                              if candidate in pool_survivors else 0.0),
+            "experience": float(pool_f2[pool_survivors.index(candidate)]
+                                if candidate in pool_survivors else 0.0),
         }
-        top_100.append(candidate)
+        top_100.append(c)
 
     log_pool_transition(
         log, "Pass B composite scoring",
-        len(rerank_pool), len(top_100)
+        len(pool_survivors), len(top_100)
     )
 
     return top_100

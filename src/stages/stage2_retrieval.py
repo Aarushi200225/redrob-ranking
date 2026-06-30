@@ -3,15 +3,20 @@ stages/stage2_retrieval.py
 ──────────────────────────
 Stage 2 — Honeypot Gate + Dual-Chamber BM25 Retrieval.
 
-Responsibilities:
-  - F8 honeypot gate on all 100K candidates (vectorised numpy)
-  - Dual-chamber BM25 retrieval
-  - Union of chambers → 15K candidate pool
+Pipeline:
+  1. Load all candidates
+  2. F8 honeypot gate (vectorised numpy, all candidates)
+  3. Dual-chamber BM25 — Chamber A (raw JD) + Chamber B (expanded)
+  4. Union chambers → retrieval pool
+  5. Free BM25 corpus + index before returning (RAM for Stage 3)
 
-Runtime: ~19s
-Output:  (bm25_pool, valid_candidate_ids)
+Returns 4-tuple: (bm25_pool, valid_ids, top_a, top_b)
+top_a and top_b passed to Stage 3 for 6-stream RRF fusion.
+
+Runtime: ~90s | Memory peak: ~3GB (corpus freed before return)
 """
 
+import gc
 from pathlib import Path
 
 from src.config import (
@@ -19,9 +24,10 @@ from src.config import (
     BM25_CHAMBER_A_TOP_K,
     BM25_CHAMBER_B_TOP_K,
     BM25_UNION_CAP,
+    DEV_CANDIDATE_LIMIT,
 )
 from src.utils.data_loader import load_all_candidates
-from src.utils.logger import get_logger, log_pool_transition
+from src.utils.logger import get_logger, log_pool_transition, memory_gate
 from src.features.f8_honeypot_gate import (
     compute_honeypot_scores,
     apply_honeypot_gate,
@@ -39,7 +45,7 @@ log = get_logger(__name__)
 def run(
     candidates_path: Path,
     jd_object: dict,
-) -> tuple[list[dict], set[str], list[dict], list[dict]]:
+) -> tuple:
     """
     Execute Stage 2 — Honeypot Gate + BM25 Retrieval.
 
@@ -50,23 +56,34 @@ def run(
 
     Returns
     -------
-    tuple:
-      bm25_pool          : list[dict] — up to 15K candidates
-      valid_candidate_ids: set[str]  — all IDs from source file
-      top_a              : list[dict] — candidates from Chamber A
-      top_b              : list[dict] — candidates from Chamber B
+    tuple: (bm25_pool, valid_candidate_ids, top_a, top_b)
+      bm25_pool           : list[dict] — union of both chambers
+      valid_candidate_ids : set[str]  — all IDs from source file
+      top_a               : list[dict] — Chamber A results for RRF
+      top_b               : list[dict] — Chamber B results for RRF
     """
-    # ── Load all candidates ───────────────────────────────────────────────────
-    candidates = load_all_candidates(candidates_path)
-    valid_candidate_ids = {c["candidate_id"] for c in candidates}
+    # ── Load candidates ───────────────────────────────────────────────────────
+    all_candidates = load_all_candidates(candidates_path)
 
-    log.info(f"Loaded {len(candidates):,} candidates")
+    # Dev profile: limit candidate pool for fast local testing
+    if DEV_CANDIDATE_LIMIT is not None:
+        log.info(
+            f"DEV mode: limiting to {DEV_CANDIDATE_LIMIT} candidates"
+        )
+        all_candidates = all_candidates[:DEV_CANDIDATE_LIMIT]
 
-    # ── F8: Honeypot gate on full pool ────────────────────────────────────────
-    honeypot_scores = compute_honeypot_scores(candidates)
-    clean_candidates = apply_honeypot_gate(candidates, honeypot_scores)
+    valid_candidate_ids = {c["candidate_id"] for c in all_candidates}
+    log.info(f"Loaded {len(all_candidates):,} candidates")
 
-    # ── Build BM25 index ──────────────────────────────────────────────────────
+    # ── F8: Honeypot gate ─────────────────────────────────────────────────────
+    honeypot_scores  = compute_honeypot_scores(all_candidates)
+    clean_candidates = apply_honeypot_gate(all_candidates, honeypot_scores)
+
+    # Free original list — clean_candidates is what we need
+    del all_candidates
+    gc.collect()
+
+    # ── BM25 index ────────────────────────────────────────────────────────────
     log.info("Building BM25 index ...")
     corpus, index = build_bm25_index(clean_candidates)
 
@@ -86,22 +103,21 @@ def run(
     )
     log.info(f"Chamber B: {len(top_b):,} candidates")
 
-    # ── Union ─────────────────────────────────────────────────────────────────
+    # ── Union chambers ────────────────────────────────────────────────────────
     bm25_pool = union_chambers(top_a, top_b, cap=BM25_UNION_CAP)
 
-    # Free BM25 corpus memory before returning — Stage 3 needs the RAM
+    # ── Free BM25 memory before Stage 3 ──────────────────────────────────────
+    # BM25 corpus (~500MB) must be released before embedding stage
     del corpus
     del index
     del clean_candidates
-    del candidates
-    import gc
     gc.collect()
+    memory_gate("Stage 2 BM25", log)
 
     log_pool_transition(
         log, "Stage 2",
         len(valid_candidate_ids), len(bm25_pool),
         note="after honeypot gate + dual-chamber BM25"
     )
-
 
     return bm25_pool, valid_candidate_ids, top_a, top_b

@@ -68,7 +68,7 @@ def build_cross_encoder_input(candidate: dict) -> str:
 
     # Headline and summary (truncated)
     headline = profile.get("headline", "").strip()
-    summary  = profile.get("summary", "")[:250].strip()
+    summary  = profile.get("summary", "")[:150].strip()
     if headline:
         parts.append(f"HEADLINE: {headline}")
     if summary:
@@ -77,12 +77,12 @@ def build_cross_encoder_input(candidate: dict) -> str:
     # Up to 5 career roles — compressed format
     if career:
         career_parts = ["CAREER:"]
-        for role in career[:5]:
+        for role in career[:3]:                 # Reduced from 5 to 3 roles
             title    = role.get("title", "")
             company  = role.get("company", "")
             duration = role.get("duration_months", 0)
             industry = role.get("industry", "")
-            desc     = role.get("description", "")[:150].strip()
+            desc     = role.get("description", "")[:80].strip()  # Reduced from 150
             career_parts.append(
                 f"- {title} at {company} "
                 f"({duration}mo, {industry}): {desc}"
@@ -95,7 +95,7 @@ def build_cross_encoder_input(candidate: dict) -> str:
         skills,
         key=lambda s: proficiency_order.get(s.get("proficiency", "beginner"), 0),
         reverse=True,
-    )[:8]
+    )[:6]      # Reduced from 8 
     if sorted_skills:
         skill_str = ", ".join(
             f"{s.get('name', '')}({s.get('proficiency', '')})"
@@ -103,7 +103,7 @@ def build_cross_encoder_input(candidate: dict) -> str:
         )
         parts.append(f"SKILLS: {skill_str}")
 
-    return "\n".join(parts)
+    return "\n".join(parts)[:600]   # Hard cap added
 
 
 def score_pairs(
