@@ -136,7 +136,7 @@ def _extract_json(text: str) -> dict:
             return orjson.loads(json_fragment)
         except Exception:
             raise ValueError(f"Truncated JSON cannot be recovered: {text[start:start+300]}")
-
+    
     return orjson.loads(text[start:end_idx])
 
 
@@ -144,75 +144,78 @@ def _extract_json(text: str) -> dict:
 
 def parse_jd(model, jd_text: str) -> dict:
     """
-    Parse job description into structured object.
+    Parse job description using grounded extraction.
 
-    Uses chain-of-thought extraction — explicitly walks the model
-    through each field before requesting JSON output. Small models
-    perform dramatically better with step decomposition than with
-    "fill this template" prompts.
+    Strategy: provide the JD text inline and explicitly instruct
+    the model to only extract what appears in the text — prevents
+    hallucination common in small models with open-ended extraction.
 
-    Grammar-constrained output ensures valid JSON every time.
-    Manual enrichment fallback handles under-extraction.
+    temperature=0.0 removes randomness for deterministic output.
     """
-    # Truncate JD to fit context window comfortably
-    jd_truncated = jd_text[:3500]
+    jd_truncated = jd_text[:2500]
 
-    prompt = f"""You are a technical recruiting expert. Extract structured hiring requirements from this job description.
+    prompt = f"""You are a technical recruiting expert. Read this job description carefully. Extract ONLY information that appears in the text below. 
+Do not add technologies not mentioned. Do not hallucinate.Do not generate a long list — only what is actually in the text.
 
-Think through this step by step:
+JD TEXT:
+---
+{jd_truncated}
+---
 
-STEP 1 - Technical tools and frameworks explicitly required:
+Think through this step by step, extract the following and output as JSON:
+
+1. hard_requirements: List technical skills/tools explicitly mentioned in the JD above. Only include what you actually see in the text above.
 Look for programming languages, ML frameworks, databases, cloud tools, and specific technologies.
 
-STEP 2 - Experience requirements:
-Look for years of experience, types of companies (product vs consulting), specific role types.
+2. experience_band: The years of experience range mentioned. look for types of companies (product vs consulting), specific role types.
 
-STEP 3 - Disqualifying patterns:
-Look for what the company explicitly does NOT want.
+3. location_preferences: Cities mentioned as preferred locations.
 
-STEP 4 - Culture and work style signals:
-Look for async communication, startup tolerance, shipping speed preferences.
+4. culture__signals: Which of these are mentioned? async_writer, startup_tolerance, ships_over_researches, responsive_communicator
 
-Job Description:
-{jd_truncated}
-
-Now output ONLY a JSON object with this exact structure:
+Output ONLY this JSON structure, filled in based on the text above:
 {{
-  "hard_requirements": ["list every specific technical tool, framework, and skill explicitly mentioned"],
-  "soft_penalties": ["list patterns that reduce candidate score e.g. consulting_only_career, langchain_only_no_pre_llm_work"],
-  "soft_positives": ["list nice-to-have signals e.g. open_source_contributions, pre_2022_ml_production"],
+  "hard_requirements": ["list only skills/tools mentioned in the JD text above"],
+  "soft_penalties": ["consulting_only_career", "langchain_only_no_pre_llm_work", "pure_research_no_production"],
+  "soft_positives": ["pre_2022_ml_production", "open_source_contributions", "ltr_experience"],
   "experience_band": {{"min": 5, "max": 9}},
   "location_preferences": {{"tier_1": ["Pune", "Noida"], "tier_2": ["Hyderabad", "Mumbai", "Delhi NCR"]}},
   "notice_preference": {{"ideal_days": 30, "max_days": 90}},
   "company_type": ["product", "startup", "scaleup"],
   "culture_signals": {{"async_writer": true, "startup_tolerance": true, "ships_over_researches": true, "responsive_communicator": true}},
-  "role_intent": "one sentence describing the ideal candidate"
+  "role_intent": "one sentence describing the ideal candidate based on the JD above"
 }}"""
 
-    log.info("Parsing JD with Qwen (CoT prompt) ...")
+    log.info("Parsing JD with Qwen (grounded extraction, temp=0.0) ...")
 
     try:
         response = model.create_chat_completion(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=LLM_MAX_TOKENS,
-            temperature=LLM_TEMPERATURE,
+            max_tokens=600,
+            temperature=0.0,
         )
         raw    = response["choices"][0]["message"]["content"]
         parsed = _extract_json(raw)
+        
+        # Merge with defaults — if Qwen left any field empty,
+        # use the sensible default rather than failing
+        defaults = _minimal_jd_fallback()
+        for key, default_val in defaults.items():
+            if key not in parsed or not parsed[key]:
+                parsed[key] = default_val
 
         # Quality gate — enrich if under-extracted
         if len(parsed.get("hard_requirements", [])) < 4:
             log.warning(
                 f"Under-extraction detected "
-                f"({len(parsed.get('hard_requirements', []))} requirements) "
+                f"({len(parsed.get('hard_requirements', []))} reqs) "
                 f"— enriching with keyword scan"
             )
             parsed = _enrich_with_keyword_scan(parsed, jd_text)
 
         log.info(
             f"JD parsed: "
-            f"{len(parsed.get('hard_requirements', []))} hard requirements, "
-            f"{len(parsed.get('soft_positives', []))} soft positives"
+            f"{len(parsed.get('hard_requirements', []))} requirements"
         )
         return parsed
 
