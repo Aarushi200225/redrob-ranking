@@ -3,14 +3,14 @@ stages/stage5_output.py
 ────────────────────────
 Stage 5 — Reasoning Generation + Output.
 
-Responsibilities:
-  - Ranks 1-40: Qwen LLM reasoning (sequential, Pydantic guardrail)
-  - Ranks 41-100: dynamic structured assembly
-  - Format validation (hard assertions)
-  - CSV write
+Pipeline:
+  1. Ranks 1-40: Qwen LLM reasoning (n_ctx=512, n_batch=32)
+     Per-candidate try/except — one failure never cascades
+  2. Ranks 41-100: dynamic structured assembly
+  3. Format validation (hard assertions)
+  4. CSV write
 
 Runtime: ~35s
-Output:  Path to ranked_output.csv
 """
 
 from pathlib import Path
@@ -19,14 +19,12 @@ import pandas as pd
 from src.config import (
     LLM_REASONING_TOP_N,
     OUTPUT_CSV_PATH,
-    LLM_N_CTX_REASONING
+    LLM_N_CTX_REASONING,
+    LLM_N_BATCH_REASONING,
 )
-from src.utils.logger import get_logger
+from src.utils.logger import get_logger, memory_gate
 from src.utils.validator import validate_output
-# from src.models.model_context import ModelContext
-# from src.models.llm import load_llm, generate_reasoning
 from src.reasoning.structured_assembly import build_structured_reasoning
-from functools import partial
 
 log = get_logger(__name__)
 
@@ -35,6 +33,7 @@ def run(
     top_100: list[dict],
     jd_object: dict,
     output_path: Path = OUTPUT_CSV_PATH,
+    valid_ids: set = None,
 ) -> Path:
     """
     Execute Stage 5 — Reasoning + Output.
@@ -44,6 +43,7 @@ def run(
     top_100     : Top 100 ranked candidates from Stage 4.
     jd_object   : Parsed JD object from Stage 1.
     output_path : Destination for ranked_output.csv.
+    valid_ids   : Set of valid candidate_ids for format validation.
 
     Returns
     -------
@@ -51,6 +51,7 @@ def run(
     """
     from src.models.model_context import ModelContext
     from src.models.llm import load_llm, generate_reasoning
+
     reasonings = []
 
     # ── Ranks 1-40: Qwen LLM reasoning ───────────────────────────────────────
@@ -61,26 +62,43 @@ def run(
         f"Generating LLM reasoning for ranks 1-{LLM_REASONING_TOP_N} ..."
     )
 
-    with ModelContext(load_llm,  LLM_N_CTX_REASONING) as llm:
-        for candidate in llm_candidates:
-            score_breakdown = candidate.get("_score_breakdown", {})
-            reasoning = generate_reasoning(
-                llm, candidate, jd_object, score_breakdown
-            )
-            reasonings.append(reasoning)
+    try:
+        with ModelContext(load_llm, LLM_N_CTX_REASONING, LLM_N_BATCH_REASONING) as llm:
+            for candidate in llm_candidates:
+                score_breakdown = candidate.get("_score_breakdown", {})
+                # Per-candidate try/except — one failure never cascades
+                try:
+                    reasoning = generate_reasoning(
+                        llm, candidate, jd_object, score_breakdown
+                    )
+                except Exception as e:
+                    log.debug(
+                        f"LLM reasoning failed for "
+                        f"{candidate.get('candidate_id')}: {e}"
+                    )
+                    reasoning = build_structured_reasoning(candidate, jd_object)
+                reasonings.append(reasoning)
+    except Exception as e:
+        log.warning(
+            f"Qwen unavailable for reasoning ({e}) — "
+            f"structured assembly for ranks 1-{LLM_REASONING_TOP_N}"
+        )
+        reasonings = [
+            build_structured_reasoning(c, jd_object) for c in llm_candidates
+        ]
+
+    memory_gate("Stage 5 Qwen", log)
 
     # ── Ranks 41-100: structured assembly ────────────────────────────────────
     log.info(
         f"Generating structured reasoning for "
         f"ranks {LLM_REASONING_TOP_N + 1}-100 ..."
     )
-
     for candidate in rest_candidates:
         reasoning = build_structured_reasoning(candidate, jd_object)
         reasonings.append(reasoning)
 
     # ── Build output DataFrame ────────────────────────────────────────────────
-    valid_ids = set()  # Populated from pipeline — passed via jd_object
     rows = []
     for rank_idx, (candidate, reasoning) in enumerate(
         zip(top_100, reasonings), start=1
@@ -95,16 +113,11 @@ def run(
     df = pd.DataFrame(rows, columns=["candidate_id", "rank", "score", "reasoning"])
 
     # ── Format validation ─────────────────────────────────────────────────────
-    # Load valid IDs for validation
-    from src.utils.data_loader import load_all_candidates
-    from src.config import CANDIDATES_PATH
-
-    try:
+    if valid_ids is None:
+        from src.utils.data_loader import load_all_candidates
+        from src.config import CANDIDATES_PATH
         all_candidates = load_all_candidates(CANDIDATES_PATH)
         valid_ids = {c["candidate_id"] for c in all_candidates}
-    except Exception:
-        valid_ids = {c["candidate_id"] for c in top_100}
-        log.warning("Could not load full candidate pool for ID validation")
 
     validate_output(df, valid_ids)
 
@@ -120,10 +133,11 @@ def run_structured_only(
     top_100: list[dict],
     jd_object: dict,
     output_path: Path = OUTPUT_CSV_PATH,
+    valid_ids: set = None,
 ) -> Path:
     """
     Fallback — structured assembly for all 100 candidates.
-    Called when LLM reasoning fails entirely.
+    Called when LLM reasoning fails entirely at the stage level.
     """
     log.info("Running structured assembly for all 100 candidates ...")
 
@@ -139,13 +153,11 @@ def run_structured_only(
 
     df = pd.DataFrame(rows, columns=["candidate_id", "rank", "score", "reasoning"])
 
-    from src.utils.data_loader import load_all_candidates
-    from src.config import CANDIDATES_PATH
-    try:
+    if valid_ids is None:
+        from src.utils.data_loader import load_all_candidates
+        from src.config import CANDIDATES_PATH
         all_candidates = load_all_candidates(CANDIDATES_PATH)
         valid_ids = {c["candidate_id"] for c in all_candidates}
-    except Exception:
-        valid_ids = {c["candidate_id"] for c in top_100}
 
     validate_output(df, valid_ids)
 

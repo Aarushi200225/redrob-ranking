@@ -7,7 +7,8 @@ NOT template-driven — each candidate's reasoning leads with
 their actual strongest scoring signal. No two candidates
 produce identical strings unless their profiles are identical.
 
-Also serves as the Stage 5 fallback when Qwen LLM fails.
+Also serves as the Stage 5 fallback when Qwen LLM fails —
+used per-candidate so one failure never cascades to others.
 """
 
 from src.utils.logger import get_logger
@@ -18,10 +19,7 @@ SIGNAL_LABELS = {
     "cross_encoder": "strong JD relevance match",
     "vibe":          "strong culture-fit signals",
     "experience":    "strong experience quality",
-    "skills":        "solid skills coverage",
-    "availability":  "high availability",
-    "market":        "strong market validation",
-    "semantic":      "strong semantic match",
+    "rrf":           "strong semantic match",
 }
 
 
@@ -86,12 +84,12 @@ def build_structured_reasoning(
 
     # Determine strongest signal
     top_signal = max(score_breakdown, key=score_breakdown.get) \
-                 if score_breakdown else "skills"
+                 if score_breakdown else "experience"
 
     parts = []
 
     # Lead sentence — varies by top signal
-    if top_signal in ("experience", "cross_encoder", "semantic"):
+    if top_signal in ("experience", "cross_encoder", "rrf"):
         top_skills = _top_skills_str(candidate, 3)
         parts.append(
             f"{title} at {company} with {yoe:.1f}y experience"
@@ -101,7 +99,6 @@ def build_structured_reasoning(
     elif top_signal == "vibe":
         signals = candidate.get("redrob_signals", {})
         github  = signals.get("github_activity_score", -1)
-        startup_note = ""
 
         career = candidate.get("career_history", [])
         startup_sizes = {"1-10", "11-50", "51-200"}
@@ -109,25 +106,20 @@ def build_structured_reasoning(
             1 for r in career
             if r.get("company_size", "") in startup_sizes
         )
-        if startup_roles >= 2:
-            startup_note = f"; {startup_roles} startup roles"
+        startup_note = f"; {startup_roles} startup roles" if startup_roles >= 2 else ""
+        github_note  = f"; GitHub score {github:.0f}" if github > 0 else ""
 
-        github_note = f"; GitHub score {github:.0f}" \
-                      if github > 0 else ""
         parts.append(
             f"Strong culture-fit signals — "
             f"{title} at {company}{startup_note}{github_note}"
         )
 
-    elif top_signal == "skills":
+    else:
         top_skills = _top_skills_str(candidate, 3)
         parts.append(
-            f"Solid skill coverage: {top_skills} — "
             f"{title} at {company}, {yoe:.1f}y experience"
+            + (f"; skills: {top_skills}" if top_skills else "")
         )
-
-    else:
-        parts.append(f"{title} at {company}, {yoe:.1f}y experience")
 
     # Availability note
     avail = _availability_snippet(candidate)
