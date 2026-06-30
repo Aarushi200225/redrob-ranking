@@ -33,7 +33,7 @@ def load_embedder():
     model = SentenceTransformer(EMBEDDER_MODEL_ID)
     log.info(
         f"Embedder loaded — "
-        f"embedding dim: {model.get_sentence_embedding_dimension()}"
+        f"embedding dim: {model.get_embedding_dimension()}"
     )
     return model
 
