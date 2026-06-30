@@ -144,85 +144,56 @@ def _extract_json(text: str) -> dict:
 
 def parse_jd(model, jd_text: str) -> dict:
     """
-    Parse job description using grounded extraction.
+    Parse job description using hybrid extraction.
 
-    Strategy: provide the JD text inline and explicitly instruct
-    the model to only extract what appears in the text — prevents
-    hallucination common in small models with open-ended extraction.
+    Design decision: Qwen2.5-0.5B is unreliable for structured
+    multi-field JSON extraction — it under-extracts or echoes
+    placeholder text. Keyword scan is deterministic and accurate
+    for technical requirements (verified against actual JD content).
 
-    temperature=0.0 removes randomness for deterministic output.
+    Qwen is used only for the role_intent summary — a single
+    short sentence is well within a 0.5B model's reliable range.
     """
-    jd_truncated = jd_text[:2500]
+    # Primary: deterministic keyword scan for hard requirements
+    base = _enrich_with_keyword_scan({}, jd_text)
 
-    prompt = f"""You are a technical recruiting expert. Read this job description carefully. Extract ONLY information that appears in the text below. 
-Do not add technologies not mentioned. Do not hallucinate.Do not generate a long list — only what is actually in the text.
-
-JD TEXT:
----
-{jd_truncated}
----
-
-Think through this step by step, extract the following and output as JSON:
-
-1. hard_requirements: List technical skills/tools explicitly mentioned in the JD above. Only include what you actually see in the text above.
-Look for programming languages, ML frameworks, databases, cloud tools, and specific technologies.
-
-2. experience_band: The years of experience range mentioned. look for types of companies (product vs consulting), specific role types.
-
-3. location_preferences: Cities mentioned as preferred locations.
-
-4. culture__signals: Which of these are mentioned? async_writer, startup_tolerance, ships_over_researches, responsive_communicator
-
-Output ONLY this JSON structure, filled in based on the text above:
-{{
-  "hard_requirements": ["list only skills/tools mentioned in the JD text above"],
-  "soft_penalties": ["consulting_only_career", "langchain_only_no_pre_llm_work", "pure_research_no_production"],
-  "soft_positives": ["pre_2022_ml_production", "open_source_contributions", "ltr_experience"],
-  "experience_band": {{"min": 5, "max": 9}},
-  "location_preferences": {{"tier_1": ["Pune", "Noida"], "tier_2": ["Hyderabad", "Mumbai", "Delhi NCR"]}},
-  "notice_preference": {{"ideal_days": 30, "max_days": 90}},
-  "company_type": ["product", "startup", "scaleup"],
-  "culture_signals": {{"async_writer": true, "startup_tolerance": true, "ships_over_researches": true, "responsive_communicator": true}},
-  "role_intent": "one sentence describing the ideal candidate based on the JD above"
-}}"""
-
-    log.info("Parsing JD with Qwen (grounded extraction, temp=0.0) ...")
-
+    # Qwen handles only the short, low-risk summary field
     try:
-        response = model.create_chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=600,
-            temperature=0.0,
-        )
-        raw    = response["choices"][0]["message"]["content"]
-        parsed = _extract_json(raw)
-        
-        # Merge with defaults — if Qwen left any field empty,
-        # use the sensible default rather than failing
-        defaults = _minimal_jd_fallback()
-        for key, default_val in defaults.items():
-            if key not in parsed or not parsed[key]:
-                parsed[key] = default_val
-
-        # Quality gate — enrich if under-extracted
-        if len(parsed.get("hard_requirements", [])) < 4:
-            log.warning(
-                f"Under-extraction detected "
-                f"({len(parsed.get('hard_requirements', []))} reqs) "
-                f"— enriching with keyword scan"
-            )
-            parsed = _enrich_with_keyword_scan(parsed, jd_text)
-
-        log.info(
-            f"JD parsed: "
-            f"{len(parsed.get('hard_requirements', []))} requirements"
-        )
-        return parsed
-
+        role_intent = _generate_role_intent(model, jd_text)
+        if role_intent and len(role_intent) > 20 and "based on the JD" not in role_intent:
+            base["role_intent"] = role_intent
     except Exception as e:
-        log.warning(f"JD parsing failed ({e}) — using keyword scan fallback")
-        return _enrich_with_keyword_scan({}, jd_text)
+        log.debug(f"Role intent generation skipped ({e}) — using default")
 
+    log.info(
+        f"JD parsed: "
+        f"{len(base.get('hard_requirements', []))} requirements "
+        f"(keyword scan, deterministic)"
+    )
+    return base
+
+
+def _generate_role_intent(model, jd_text: str) -> str:
+    """
+    Generate a single-sentence role summary.
+    Narrow, well-bounded task — within Qwen 0.5B's reliable range.
+    """
+    prompt = f"""Summarize this job in exactly one sentence describing the ideal candidate.
+
+Job posting:
+{jd_text[:1500]}
+
+One sentence summary:"""
+
+    response = model.create_chat_completion(
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=80,
+        temperature=0.2,
+    )
+    text = response["choices"][0]["message"]["content"].strip()
+    # Strip quotes if model wrapped the sentence
+    text = text.strip('"\'')
+    return text
 
 def _enrich_with_keyword_scan(parsed: dict, jd_text: str) -> dict:
     """
