@@ -47,7 +47,7 @@ CROSS_ENCODER_MODEL_ID = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 LLM_N_THREADS         = 4
 LLM_TEMPERATURE       = 0.1    # Low — factual extraction
 LLM_MAX_TOKENS        = 1025    # JD parsing output cap
-LLM_REASONING_TOKENS  = 120    # Reasoning string output cap
+LLM_REASONING_TOKENS  = 180    # Reasoning string output cap,  Increased from 120 — Qwen needs room to complete JSON
 
 # Two n_ctx values — JD parsing needs more context than reasoning generation
 LLM_N_CTX             = 2048   # Stage 1 JD parsing + HyDE

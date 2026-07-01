@@ -103,20 +103,17 @@ def load_llm(n_ctx: int = None, n_batch: int = None):
 def _extract_json(text: str) -> dict:
     """
     Extract first JSON object from LLM output.
-    Handles markdown fences, preamble, and truncated output.
+    Recovers partial reasoning text from genuinely truncated output
+    rather than failing — partial grounded text beats a fallback.
     """
-    # Strip markdown fences
     text = re.sub(r"```(?:json)?", "", text).strip()
     text = text.replace("```", "").strip()
 
-    # Find opening brace
     start = text.find("{")
     if start == -1:
-        raise ValueError(f"No JSON object found in output: {text[:200]}")
+        raise ValueError(f"No JSON object found: {text[:200]}")
 
-    # Try to find complete JSON by scanning for balanced braces
-    depth   = 0
-    end_idx = -1
+    depth, end_idx = 0, -1
     for i, ch in enumerate(text[start:], start):
         if ch == "{":
             depth += 1
@@ -126,19 +123,29 @@ def _extract_json(text: str) -> dict:
                 end_idx = i + 1
                 break
 
-    if end_idx == -1:
-        # Truncated — attempt to close incomplete JSON
-        json_fragment = text[start:]
-        # Count unclosed braces and close them
-        open_count = json_fragment.count("{") - json_fragment.count("}")
-        json_fragment += "}" * open_count
-        try:
-            return orjson.loads(json_fragment)
-        except Exception:
-            raise ValueError(f"Truncated JSON cannot be recovered: {text[start:start+300]}")
-    
-    return orjson.loads(text[start:end_idx])
+    if end_idx != -1:
+        return orjson.loads(text[start:end_idx])
 
+    # Try closing truncated JSON
+    fragment = text[start:]
+    try:
+        if fragment.count('"') % 2 != 0:
+            fragment += '"'
+        open_braces = fragment.count("{") - fragment.count("}")
+        fragment += "}" * open_braces
+        return orjson.loads(fragment)
+    except Exception:
+        pass
+
+    # Last resort: extract partial reasoning text via regex
+    import re as _re
+    m = _re.search(r'"reasoning"\s*:\s*"([^"]*)', text)
+    if m:
+        partial = m.group(1).strip()
+        if len(partial) > 10:
+            return {"reasoning": partial + "."}
+
+    raise ValueError(f"Truncated JSON cannot be recovered: {text[start:start+300]}")
 
 # ── JD parsing ────────────────────────────────────────────────────────────────
 
@@ -287,12 +294,11 @@ def generate_reasoning(
     """
     Generate recruiter-facing reasoning string for a candidate.
 
-    Per-candidate try/except ensures one Qwen failure never
-    cascades to remaining candidates — each falls back to
-    structured assembly independently.
+    Constrained to ONE sentence (max 20 words) to fit within
+    the 0.5B model token budget reliably.
+    Per-candidate try/except — one failure never cascades to others.
     """
     profile = candidate.get("profile", {})
-    signals = candidate.get("redrob_signals", {})
     skills  = candidate.get("skills", [])
 
     proficiency_order = {"expert": 4, "advanced": 3, "intermediate": 2, "beginner": 1}
@@ -300,37 +306,29 @@ def generate_reasoning(
         skills,
         key=lambda s: proficiency_order.get(s.get("proficiency", "beginner"), 0),
         reverse=True,
-    )[:3]
-    skill_str = ", ".join(
-        f"{s['name']}({s['proficiency']})" for s in top_skills
+    )[:2]
+    skill_str = ", ".join(s.get("name", "") for s in top_skills if s.get("name"))
+
+    top_signal = (
+        max(score_breakdown, key=score_breakdown.get)
+        if score_breakdown else "experience"
     )
 
-    top_signals = sorted(
-        score_breakdown.items(), key=lambda x: x[1], reverse=True
-    )[:3]
-    signal_str = ", ".join(f"{k}: {v:.2f}" for k, v in top_signals)
+    title = profile.get("current_title", "")
+    yoe   = profile.get("years_of_experience", 0)
 
-    prompt = f"""You are a technical recruiter. Write 1-2 sentences explaining why this candidate fits the role.
-Be specific about their actual experience. No generic phrases.
-Output ONLY JSON: {{"reasoning": "your explanation"}}
-
-Role: {jd_object.get('role_intent', 'Senior AI Engineer')}
-
-Candidate:
-- Title: {profile.get('current_title', '')} at {profile.get('current_company', '')}
-- Experience: {profile.get('years_of_experience', 0):.1f} years
-- Top skills: {skill_str}
-- Last active: {signals.get('last_active_date', 'unknown')}
-- Response rate: {signals.get('recruiter_response_rate', 0):.0%}
-- Notice: {signals.get('notice_period_days', 0)} days
-- Open to work: {signals.get('open_to_work_flag', False)}
-- Top signals: {signal_str}"""
+    prompt = (
+        "Write ONE sentence max 20 words for why this candidate fits "
+        "a Senior AI Engineer role.\n"
+        'Output ONLY this JSON: {"reasoning": "one sentence"}\n\n'
+        f"Candidate: {title}, {yoe:.1f}y, skills: {skill_str}, signal: {top_signal}"
+    )
 
     try:
         response = model.create_chat_completion(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=LLM_REASONING_TOKENS,
-            temperature=LLM_TEMPERATURE,
+            max_tokens=80,
+            temperature=0.0,
         )
         raw    = response["choices"][0]["message"]["content"]
         parsed = _extract_json(raw)
@@ -338,11 +336,12 @@ Candidate:
         return result.reasoning
 
     except (ValueError, ValidationError, Exception) as e:
-        log.debug(f"Reasoning generation failed for {candidate.get('candidate_id')}: {e}")
-        # Per-candidate fallback — import here to avoid circular imports
+        log.debug(
+            f"Reasoning generation failed for "
+            f"{candidate.get('candidate_id')}: {e}"
+        )
         from src.reasoning.structured_assembly import build_structured_reasoning
         return build_structured_reasoning(candidate, jd_object)
-
 
 # ── Fallback ──────────────────────────────────────────────────────────────────
 
