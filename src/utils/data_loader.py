@@ -75,20 +75,40 @@ def load_all_candidates(path: Path) -> list[dict]:
     """
     Load all candidates into memory at once.
 
-    Used for BM25 tokenisation and F8 vectorised operations
-    where the full corpus must be in memory simultaneously.
+    Handles two formats transparently:
+      1. JSONL (.jsonl) — one JSON object per line (production format)
+      2. JSON array (.json) — pretty-printed array (sample/test format)
+      3. Gzipped JSONL (.jsonl.gz)
 
     Parameters
     ----------
-    path : Path to .jsonl or .jsonl.gz file.
+    path : Path to candidates file.
 
     Returns
     -------
-    list[dict] — all candidate records.
+    list[dict] — all parsed candidate records.
     """
     log.info(f"Loading all candidates from {path.name} ...")
-    candidates = []
 
+    # Peek at first non-whitespace character to detect format
+    with _open_jsonl(path) as f:
+        first_char = ""
+        while not first_char.strip():
+            byte = f.read(1)
+            if not byte:
+                break
+            first_char = byte.decode("utf-8") if isinstance(byte, bytes) else byte
+
+    if first_char == "[":
+        # JSON array format — load and parse entire file at once
+        with _open_jsonl(path) as f:
+            raw = f.read()
+        candidates = orjson.loads(raw)
+        log.info(f"Loaded {len(candidates):,} candidates (JSON array format)")
+        return candidates
+
+    # JSONL format — parse line by line
+    candidates = []
     with _open_jsonl(path) as f:
         for line in f:
             line = line.strip()
