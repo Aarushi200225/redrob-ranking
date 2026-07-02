@@ -1,99 +1,124 @@
 """
 utils/validator.py
 ──────────────────
-Hard format assertions for ranked_output.csv.
+Output format validation — matches validate_submission.py exactly.
 
-Called as the final step before CSV write in Stage 5.
-Raises AssertionError immediately on any violation —
-invalid output is worse than no output (auto-validator
-rejects on any format failure, scoring zero).
-
-Checks every requirement from the hackathon spec:
-  ✓ Exactly 100 rows
-  ✓ Columns in correct order
-  ✓ Ranks 1-100, unique, no gaps
-  ✓ No duplicate candidate_ids
-  ✓ All candidate_ids exist in source JSONL
-  ✓ Scores monotonically non-increasing
-  ✓ Scores not all the same value
-  ✓ Reasoning column non-empty for all rows
+Hard assertions — any failure raises ValueError immediately.
+Run before writing CSV to catch issues early.
 """
 
+import re
 import pandas as pd
-import numpy as np
-from pathlib import Path
-
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-REQUIRED_COLUMNS = ["candidate_id", "rank", "score", "reasoning"]
+CANDIDATE_ID_PATTERN = re.compile(r"^CAND_[0-9]{7}$")
 
 
-def validate_output(
-    df: pd.DataFrame,
-    valid_ids: set,
-) -> None:
+def validate_output(df: pd.DataFrame, valid_ids: set) -> None:
     """
-    Run all format checks against the output DataFrame.
+    Validate ranked output DataFrame against all submission rules.
 
     Parameters
     ----------
-    df        : Output DataFrame before CSV write.
-    valid_ids : Set of all valid candidate_ids from source JSONL.
+    df        : DataFrame with columns [candidate_id, rank, score, reasoning]
+    valid_ids : Set of valid candidate_ids from source JSONL
 
     Raises
     ------
-    AssertionError if any check fails — with a clear message.
+    ValueError if any check fails.
     """
     log.info("Running output format validation ...")
+    errors = []
+
+    # ── Column check ──────────────────────────────────────────────────────────
+    required_cols = ["candidate_id", "rank", "score", "reasoning"]
+    if list(df.columns) != required_cols:
+        errors.append(
+            f"Columns must be exactly {required_cols} in order. "
+            f"Got: {list(df.columns)}"
+        )
 
     # ── Row count ─────────────────────────────────────────────────────────────
-    assert len(df) == 100, (
-        f"Expected exactly 100 rows, got {len(df)}"
-    )
+    if len(df) != 100:
+        errors.append(f"Must have exactly 100 rows. Got: {len(df)}")
 
-    # ── Column names and order ────────────────────────────────────────────────
-    assert list(df.columns) == REQUIRED_COLUMNS, (
-        f"Columns must be {REQUIRED_COLUMNS} in order, got {list(df.columns)}"
-    )
+    # ── Rank checks ───────────────────────────────────────────────────────────
+    ranks = df["rank"].tolist()
+    if sorted(ranks) != list(range(1, 101)):
+        errors.append("Ranks must be exactly 1-100 with no gaps or duplicates.")
 
-    # ── Ranks ─────────────────────────────────────────────────────────────────
-    assert df["rank"].tolist() == list(range(1, 101)), (
-        "Ranks must be integers 1-100 with no gaps or duplicates"
-    )
+    # ── Candidate ID checks ───────────────────────────────────────────────────
+    seen_ids = set()
+    for i, cid in enumerate(df["candidate_id"]):
+        if not CANDIDATE_ID_PATTERN.match(str(cid)):
+            errors.append(
+                f"Row {i+2}: candidate_id '{cid}' must match CAND_XXXXXXX"
+            )
+        if cid in seen_ids:
+            errors.append(f"Row {i+2}: duplicate candidate_id '{cid}'")
+        seen_ids.add(cid)
 
-    # ── Candidate ID uniqueness ───────────────────────────────────────────────
-    assert df["candidate_id"].nunique() == 100, (
-        f"Duplicate candidate_ids found: "
-        f"{df[df['candidate_id'].duplicated()]['candidate_id'].tolist()}"
-    )
+    if valid_ids:
+        invalid = seen_ids - valid_ids
+        if invalid:
+            errors.append(
+                f"{len(invalid)} candidate_ids not found in source: "
+                f"{sorted(invalid)[:5]}"
+            )
 
-    # ── Candidate IDs exist in source ────────────────────────────────────────
-    bad_ids = set(df["candidate_id"]) - valid_ids
-    assert len(bad_ids) == 0, (
-        f"candidate_ids not found in source JSONL: {bad_ids}"
-    )
+    # ── Score checks ──────────────────────────────────────────────────────────
+    df_sorted = df.sort_values("rank").reset_index(drop=True)
+    scores = df_sorted["score"].tolist()
 
-    # ── Scores monotonically non-increasing ──────────────────────────────────
-    diffs = df["score"].diff().dropna()
-    assert (diffs <= 1e-9).all(), (
-        "Scores must be monotonically non-increasing "
-        f"(violations at ranks: "
-        f"{df[df['score'].diff() > 1e-9]['rank'].tolist()})"
-    )
+    # Scores must be numeric
+    try:
+        scores_float = [float(s) for s in scores]
+    except (ValueError, TypeError):
+        errors.append("All scores must be numeric floats.")
+        scores_float = []
 
-    # ── Scores not all same ───────────────────────────────────────────────────
-    assert df["score"].nunique() > 1, (
-        "All scores are identical — model is not differentiating candidates"
-    )
+    if scores_float:
+        # Monotonically non-increasing
+        for i in range(len(scores_float) - 1):
+            if scores_float[i] < scores_float[i + 1]:
+                errors.append(
+                    f"Score not non-increasing: "
+                    f"rank {i+1} ({scores_float[i]:.6f}) < "
+                    f"rank {i+2} ({scores_float[i+1]:.6f})"
+                )
 
-    # ── Reasoning non-empty ───────────────────────────────────────────────────
-    empty_reasoning = df[
-        df["reasoning"].isna() | (df["reasoning"].str.strip() == "")
-    ]
-    assert len(empty_reasoning) == 0, (
-        f"Empty reasoning at ranks: {empty_reasoning['rank'].tolist()}"
-    )
+        # Not all identical
+        if len(set(scores_float)) == 1:
+            errors.append("All scores are identical — ranking has no signal.")
+
+        # ── Tie-breaking check (matches validate_submission.py exactly) ───────
+        by_rank = list(zip(
+            df_sorted["rank"].tolist(),
+            scores_float,
+            df_sorted["candidate_id"].tolist()
+        ))
+        for i in range(len(by_rank) - 1):
+            r1, s1, c1 = by_rank[i]
+            r2, s2, c2 = by_rank[i + 1]
+            if s1 == s2 and c1 > c2:
+                errors.append(
+                    f"Tie-breaking violation: equal scores at ranks "
+                    f"{r1} and {r2} — candidate_id must be ascending "
+                    f"({c1!r} > {c2!r})"
+                )
+
+    # ── Reasoning checks ──────────────────────────────────────────────────────
+    for i, reasoning in enumerate(df["reasoning"]):
+        if not reasoning or str(reasoning).strip() == "":
+            errors.append(f"Row {i+2}: reasoning is empty.")
+
+    # ── Result ────────────────────────────────────────────────────────────────
+    if errors:
+        error_msg = "\n".join(f"  - {e}" for e in errors)
+        raise ValueError(
+            f"Output validation failed ({len(errors)} issues):\n{error_msg}"
+        )
 
     log.info("✓ All format checks passed — output is valid")
