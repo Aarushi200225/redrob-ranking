@@ -1,0 +1,61 @@
+team_name: "caffAInate"
+
+primary_contact:
+  name: "Aarushi Verma"
+  email: "aarushiaditi25@gmail.com"
+  phone: "+91-7507739146"
+
+team_members:
+  - name: "Aarushi Verma"
+    email: "aarushiaditi25@gmail.com"
+    role: "Developer"
+
+github_repo: "https://github.com/Aarushi200225/redrob-ranking"
+
+sandbox_link: "https://huggingface.co/spaces/Aarushi200225/redrob-ranker"
+
+reproduce_command: "python rank.py --candidates ./data/candidates.jsonl --out ./outputs/ranked_output.csv"
+
+compute:
+  platform: "Google Colab free tier — Intel Xeon 2.20GHz, 2 cores, 12GB RAM"
+  cpu_cores: 2
+  ram_gb: 12
+  python_version: "3.12"
+  os: "Ubuntu 22.04 LTS"
+  uses_gpu_for_inference: false
+  has_network_during_ranking: false
+  pre_computation_required: true
+  pre_computation_time_minutes: 2
+
+ai_tools_used:
+  - "Claude"
+  - "GitHub Copilot"
+
+ai_usage_summary: |
+  Claude was used during development for architecture discussion & brainstorming,
+  code review, debugging, and validation purposes. GitHub Copilot was
+  used for autocomplete. No candidate data was fed to any external LLM
+  during ranking. All ranking runs fully offline using local model
+  weights. The engineering decisions, system design, debugging, and
+  validation were done by the developer with Claude as a technical
+  collaborator.
+
+methodology_summary: |
+  Five-stage hybrid retrieval and reranking pipeline. Stage 1 uses
+  Qwen2.5-0.5B for role intent generation and HyDE profile creation,
+  plus bge-small-en-v1.5 for four query vectors. Stage 2 applies a
+  vectorised honeypot gate (43 eliminations, 0 false positives) and
+  dual-chamber BM25 retrieval. Stage 3 runs six-stream RRF fusion
+  combining four dense FAISS streams with two sparse BM25 streams.
+  Stage 4 extracts nine candidate quality features, applies a
+  consulting-only hard gate, runs ms-marco cross-encoder reranking
+  with MinMax normalisation preventing logit dominance, and produces
+  composite scores. Stage 5 generates LLM reasoning for top 40
+  candidates with per-candidate structured assembly fallback.
+
+declarations:
+  read_submission_spec: true
+  code_is_original_work: true
+  no_collusion: true
+  honeypot_check_done: true
+  reproduction_tested: true
