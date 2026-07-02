@@ -12,7 +12,7 @@ team_members:
 
 github_repo: "https://github.com/Aarushi200225/redrob-ranking"
 
-sandbox_link: "https://huggingface.co/spaces/Aarushi200225/redrob-ranker"
+sandbox_link: "https://colab.research.google.com/drive/1FcO4eLDb3BTJ5RDoyTrXnjsg1CG-fRmF?usp=sharing"
 
 reproduce_command: "python rank.py --candidates ./data/candidates.jsonl --out ./outputs/ranked_output.csv"
 
