@@ -216,4 +216,4 @@ redrob-ranking/
 
 ## AI Tools Declaration
 
-Claude was used throughout development for architecture discussion, code review, debugging, and iterative building. GitHub Copilot was used for autocomplete. No candidate data was sent to any external LLM or API during the ranking process. All ranking runs fully offline using local model weights.
+Claude was used throughout development for architecture discussion & brainstorming, code review, debugging, and validating purposes. GitHub Copilot was used for autocomplete. No candidate data was sent to any external LLM or API during the ranking process. All ranking runs fully offline using local model weights.
