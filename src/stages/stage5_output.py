@@ -5,12 +5,21 @@ Stage 5 — Reasoning Generation + Output.
 
 Pipeline:
   1. Ranks 1-40: Qwen LLM reasoning (n_ctx=512, n_batch=32)
-     Per-candidate try/except — one failure never cascades
+     Per-candidate try/except — one failure never cascades.
+     Fallback: build_structured_reasoning() per candidate.
   2. Ranks 41-100: dynamic structured assembly
   3. Format validation (hard assertions)
   4. CSV write
 
-Runtime: ~35s
+Design note on Qwen reasoning:
+  Qwen 2.5-0.5B generates grounded, candidate-specific reasoning
+  text but struggles with strict JSON formatting constraints.
+  The per-candidate fallback to structured assembly ensures 100%
+  output coverage while preserving LLM-generated reasoning for
+  candidates where Qwen succeeds. Production upgrade path:
+  Phi-3-mini-4k-instruct (3.8B) produces reliable JSON output.
+
+Runtime: ~35s (submission) | ~5s (dev, structured only)
 """
 
 from pathlib import Path
@@ -63,10 +72,12 @@ def run(
     )
 
     try:
-        with ModelContext(load_llm, LLM_N_CTX_REASONING, LLM_N_BATCH_REASONING) as llm:
+        with ModelContext(
+            load_llm, LLM_N_CTX_REASONING, LLM_N_BATCH_REASONING
+        ) as llm:
             for candidate in llm_candidates:
                 score_breakdown = candidate.get("_score_breakdown", {})
-                # Per-candidate try/except — one failure never cascades
+                # Per-candidate fallback — one Qwen failure never cascades
                 try:
                     reasoning = generate_reasoning(
                         llm, candidate, jd_object, score_breakdown
@@ -76,20 +87,24 @@ def run(
                         f"LLM reasoning failed for "
                         f"{candidate.get('candidate_id')}: {e}"
                     )
-                    reasoning = build_structured_reasoning(candidate, jd_object)
+                    reasoning = build_structured_reasoning(
+                        candidate, jd_object
+                    )
                 reasonings.append(reasoning)
+
     except Exception as e:
         log.warning(
-            f"Qwen unavailable for reasoning ({e}) — "
+            f"Qwen unavailable ({e}) — "
             f"structured assembly for ranks 1-{LLM_REASONING_TOP_N}"
         )
         reasonings = [
-            build_structured_reasoning(c, jd_object) for c in llm_candidates
+            build_structured_reasoning(c, jd_object)
+            for c in llm_candidates
         ]
 
     memory_gate("Stage 5 Qwen", log)
 
-    # ── Ranks 41-100: structured assembly ────────────────────────────────────
+    # ── Ranks 41-100: dynamic structured assembly ─────────────────────────────
     log.info(
         f"Generating structured reasoning for "
         f"ranks {LLM_REASONING_TOP_N + 1}-100 ..."
@@ -110,7 +125,10 @@ def run(
             "reasoning":    reasoning,
         })
 
-    df = pd.DataFrame(rows, columns=["candidate_id", "rank", "score", "reasoning"])
+    df = pd.DataFrame(
+        rows,
+        columns=["candidate_id", "rank", "score", "reasoning"]
+    )
 
     # ── Format validation ─────────────────────────────────────────────────────
     if valid_ids is None:
@@ -137,7 +155,7 @@ def run_structured_only(
 ) -> Path:
     """
     Fallback — structured assembly for all 100 candidates.
-    Called when LLM reasoning fails entirely at the stage level.
+    Called when Qwen fails entirely at the stage level.
     """
     log.info("Running structured assembly for all 100 candidates ...")
 
@@ -151,7 +169,10 @@ def run_structured_only(
             "reasoning":    reasoning,
         })
 
-    df = pd.DataFrame(rows, columns=["candidate_id", "rank", "score", "reasoning"])
+    df = pd.DataFrame(
+        rows,
+        columns=["candidate_id", "rank", "score", "reasoning"]
+    )
 
     if valid_ids is None:
         from src.utils.data_loader import load_all_candidates
