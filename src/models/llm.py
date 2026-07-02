@@ -194,7 +194,7 @@ One sentence summary:"""
 
     response = model.create_chat_completion(
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=80,
+        max_tokens=120,
         temperature=0.2,
     )
     text = response["choices"][0]["message"]["content"].strip()
@@ -292,11 +292,19 @@ def generate_reasoning(
     score_breakdown: dict,
 ) -> str:
     """
-    Generate recruiter-facing reasoning string for a candidate.
+    Generate LLM reasoning string for a candidate.
 
-    Constrained to ONE sentence (max 20 words) to fit within
-    the 0.5B model token budget reliably.
-    Per-candidate try/except — one failure never cascades to others.
+    Qwen 2.5-0.5B generates grounded candidate-specific text
+    but cannot follow strict JSON output formatting reliably.
+    Strategy: ask for plain text, clean known preamble patterns,
+    validate length, return directly.
+
+    Per-candidate fallback to build_structured_reasoning() ensures
+    pipeline never crashes on Qwen failure. DEBUG log entries are
+    expected when Qwen output is too short or malformed.
+
+    Production upgrade: Phi-3-mini-4k-instruct (3.8B) produces
+    reliable structured output and would replace this approach.
     """
     profile = candidate.get("profile", {})
     skills  = candidate.get("skills", [])
@@ -307,7 +315,9 @@ def generate_reasoning(
         key=lambda s: proficiency_order.get(s.get("proficiency", "beginner"), 0),
         reverse=True,
     )[:2]
-    skill_str = ", ".join(s.get("name", "") for s in top_skills if s.get("name"))
+    skill_str = ", ".join(
+        s.get("name", "") for s in top_skills if s.get("name")
+    )
 
     top_signal = (
         max(score_breakdown, key=score_breakdown.get)
@@ -318,30 +328,67 @@ def generate_reasoning(
     yoe   = profile.get("years_of_experience", 0)
 
     prompt = (
-        "Write ONE sentence max 20 words for why this candidate fits "
-        "a Senior AI Engineer role.\n"
-        'Output ONLY this JSON: {"reasoning": "one sentence"}\n\n'
-        f"Candidate: {title}, {yoe:.1f}y, skills: {skill_str}, signal: {top_signal}"
+        f"Candidate: {title}, {yoe:.1f}y experience, "
+        f"top skills: {skill_str}. Strongest signal: {top_signal}.\n"
+        "In one sentence, explain why this candidate fits "
+        "a Senior AI Engineer role at a product startup."
     )
 
     try:
         response = model.create_chat_completion(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=80,
-            temperature=0.0,
+            max_tokens=120,
+            temperature=0.1,
         )
-        raw    = response["choices"][0]["message"]["content"]
-        parsed = _extract_json(raw)
-        result = ReasoningOutput(**parsed)
-        return result.reasoning
+        raw = response["choices"][0]["message"]["content"].strip()
 
-    except (ValueError, ValidationError, Exception) as e:
+        # Strip known preamble patterns Qwen prepends
+        PREAMBLES = [
+            "Here is a one-sentence recruiter summary",
+            "Here is a one-sentence",
+            "Here\'s a one-sentence",
+            "One-sentence summary:",
+            "Summary:",
+            "Reasoning:",
+            "Answer:",
+        ]
+        for p in PREAMBLES:
+            if raw.lower().startswith(p.lower()):
+                if ":" in raw:
+                    raw = raw.split(":", 1)[1].strip()
+                break
+
+        # Clean JSON artifacts if model wrapped output
+        if raw.startswith("{") and "reasoning" in raw:
+            import re
+            m = re.search(r'"reasoning"\s*:\s*"([^"]+)"', raw)
+            if m:
+                raw = m.group(1).strip()
+
+        # Validate minimum quality
+        if len(raw) < 20:
+            raise ValueError(f"Output too short: {repr(raw)}")
+
+        # Truncate at last complete sentence boundary
+        if len(raw) > 220:
+            raw = raw[:220]
+            # Find last period to avoid mid-word truncation
+            last_period = raw.rfind(".")
+            if last_period > 50:
+                raw = raw[:last_period + 1]
+            else:
+                raw = raw.rstrip() + "."
+
+        return raw
+
+    except (ValueError, Exception) as e:
         log.debug(
             f"Reasoning generation failed for "
             f"{candidate.get('candidate_id')}: {e}"
         )
         from src.reasoning.structured_assembly import build_structured_reasoning
         return build_structured_reasoning(candidate, jd_object)
+
 
 # ── Fallback ──────────────────────────────────────────────────────────────────
 
